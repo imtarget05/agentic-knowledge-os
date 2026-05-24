@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 from app.observability.logging import logger
 from app.config import settings
+# pyrefly: ignore [missing-import]
 import numpy as np
 
 class RerankerEngine:
@@ -9,6 +10,7 @@ class RerankerEngine:
         # Use settings to decide if we should load the model
         if getattr(settings, "USE_RERANKER", False):
             try:
+                # pyrefly: ignore [missing-import]
                 from sentence_transformers import CrossEncoder
                 # Use a lightweight but effective cross-encoder
                 self.model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
@@ -38,7 +40,7 @@ class RerankerEngine:
                     scored_docs.append(doc_copy)
             else:
                 # Fallback to cosine similarity if model not loaded
-                from app.rag.embeddings import embedding_engine
+                from app.rag.embeddings import embedding_engine 
                 query_vec = np.array(embedding_engine.get_query_embedding(query))
                 scored_docs = []
                 for doc in documents:

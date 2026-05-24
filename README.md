@@ -29,9 +29,9 @@ graph TD
 
     %% API Gateway Layer
     subgraph API [FastAPI Gateway Router]
-        C_API[/api/chat - SSE Streaming]
-        I_API[/api/ingest - Document / Codebase Ingestion]
-        E_API[/api/eval - LLM-as-a-Judge suite]
+        C_API["/api/chat (SSE Streaming)"]
+        I_API["/api/ingest (Document / Codebase Ingestion)"]
+        E_API["/api/eval (LLM-as-a-Judge suite)"]
     end
 
     %% Multi-Agent Loop Layer
