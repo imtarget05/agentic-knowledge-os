@@ -47,9 +47,18 @@ interface EvalMetric {
 }
 
 export default function AgenticKnowledgeOS() {
-  const [activeTab, setActiveTab] = useState<'chat' | 'ingest' | 'eval'>('chat')
+  const [activeTab, setActiveTab] = useState<'chat' | 'ingest' | 'eval' | 'parallel'>('chat')
   
-  // Chat States
+  // Parallel Task States
+  const [taskInput, setTaskInput] = useState('Truy xuất tài liệu autoscaling k3s, rà soát lỗ hổng bảo mật codebase, đánh giá hiệu năng và đề xuất kế hoạch triển khai song song')
+  const [maxWorkers, setMaxWorkers] = useState(4)
+  const [optimizePlan, setOptimizePlan] = useState(true)
+  const [decomposition, setDecomposition] = useState<any>(null)
+  const [isExecutingTasks, setIsExecutingTasks] = useState(false)
+  const [taskStatuses, setTaskStatuses] = useState<Record<string, any>>({})
+  const [executionResult, setExecutionResult] = useState<any>(null)
+  const [selectedTaskDetails, setSelectedTaskDetails] = useState<any>(null)
+  const [executionTime, setExecutionTime] = useState(0)
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
@@ -228,6 +237,114 @@ export default function AgenticKnowledgeOS() {
     }
   }
 
+  const handleRunParallelDecomposer = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!taskInput.trim()) return
+
+    setIsExecutingTasks(true)
+    setDecomposition(null)
+    setExecutionResult(null)
+    setSelectedTaskDetails(null)
+    setExecutionTime(0)
+
+    const startT = Date.now()
+    const timer = setInterval(() => {
+      setExecutionTime(Number(((Date.now() - startT) / 1000).toFixed(1)))
+    }, 100)
+
+    try {
+      const response = await fetch('/api/agents/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request: taskInput,
+          max_workers: maxWorkers,
+          enable_optimization: optimizePlan
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error("Không thể kết nối đến máy chủ API song song.")
+      }
+
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+
+      if (reader) {
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split("\n")
+          buffer = lines.pop() || ""
+
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const data = JSON.parse(line)
+
+              if (data.phase === "decomposition_complete") {
+                setDecomposition(data.decomposition)
+                // Initialize statuses
+                const statuses: any = {}
+                data.decomposition.subtasks.forEach((t: any) => {
+                  statuses[t.id] = { status: "pending", error: null, result: null }
+                })
+                setTaskStatuses(statuses)
+              } else if (data.phase === "progress") {
+                setTaskStatuses((prev: any) => ({
+                  ...prev,
+                  [data.current_task]: {
+                    ...prev[data.current_task],
+                    status: data.status
+                  }
+                }))
+              } else if (data.phase === "execution_complete") {
+                setExecutionResult(data)
+                
+                // Set all final statuses
+                const finalStatuses: any = {}
+                Object.keys(data.results).forEach((tid) => {
+                  const r = data.results[tid]
+                  finalStatuses[tid] = {
+                    status: r.status,
+                    error: r.error,
+                    result: r.result,
+                    duration_sec: r.duration_sec
+                  }
+                })
+                setTaskStatuses(finalStatuses)
+                clearInterval(timer)
+                setIsExecutingTasks(false)
+                // Set initial active task preview to first task
+                if (data.decomposition?.subtasks?.length > 0) {
+                  const firstTaskId = data.decomposition.subtasks[0].id
+                  setSelectedTaskDetails({
+                    id: firstTaskId,
+                    title: data.decomposition.subtasks[0].title,
+                    ...finalStatuses[firstTaskId]
+                  })
+                }
+              } else if (data.phase === "error") {
+                alert("Lỗi thực thi: " + data.error)
+                clearInterval(timer)
+                setIsExecutingTasks(false)
+              }
+            } catch (err) {
+              console.error("Lỗi parse dòng NDJSON:", err, line)
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      alert("Đã xảy ra sự cố trong quá trình chạy song song: " + err.message)
+      clearInterval(timer)
+      setIsExecutingTasks(false)
+    }
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#0b0f19] text-gray-100 font-sans">
       
@@ -266,6 +383,13 @@ export default function AgenticKnowledgeOS() {
           >
             <TrendingUp className="h-4 w-4" />
             <span>Evaluation Dashboard</span>
+          </button>
+          <button 
+            onClick={() => setActiveTab('parallel')}
+            className={`flex items-center space-x-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${activeTab === 'parallel' ? 'bg-indigo-600/30 border border-indigo-500/30 text-white' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}
+          >
+            <Terminal className="h-4 w-4" />
+            <span>Parallel Task Agent</span>
           </button>
         </nav>
 
@@ -572,6 +696,317 @@ export default function AgenticKnowledgeOS() {
                   <TrendingUp className="h-10 w-10 text-gray-600 mb-3" />
                   <p className="text-sm">Chưa phát hiện kết quả đánh giá nào.</p>
                   <p className="text-xs text-gray-600 mt-1">Nhấp nút "Chạy thử nghiệm RAGAS" ở góc trên bên phải để kích hoạt đánh giá hiệu năng.</p>
+                </div>
+              )}
+
+            </div>
+          </div>
+        )}
+
+        {/* D. Parallel Task Agent Tab */}
+        {activeTab === 'parallel' && (
+          <div className="flex-1 overflow-y-auto bg-[#0b0f19] p-8">
+            <div className="mx-auto max-w-6xl space-y-8">
+              
+              {/* Header */}
+              <div className="flex flex-col space-y-2">
+                <div className="flex items-center space-x-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                    <Terminal className="h-4 w-4" />
+                  </span>
+                  <h2 className="text-2xl font-bold text-white font-mono">TỰ ĐỘNG CHIA TÁCH VÀ ĐIỀU PHỐI SONG SONG</h2>
+                </div>
+                <p className="text-xs text-gray-400 max-w-3xl">
+                  Nhập một yêu cầu kỹ thuật phức tạp bên dưới. Hệ thống sẽ sử dụng LLM để tự động phân rã yêu cầu thành các bước nhỏ độc lập, 
+                  phân tích sự phụ thuộc giữa các công việc, phân bổ chúng cho các Agent chuyên biệt, và thực thi song song nhằm tối ưu hóa độ trễ (latency).
+                </p>
+              </div>
+
+              {/* Form Configurator */}
+              <div className="rounded-2xl border border-white/5 bg-[#131a2c]/50 p-6 space-y-6">
+                <form onSubmit={handleRunParallelDecomposer} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">Yêu cầu phức tạp cần thực hiện</label>
+                    <textarea 
+                      value={taskInput}
+                      onChange={(e) => setTaskInput(e.target.value)}
+                      placeholder="Nhập yêu cầu cần thực hiện..."
+                      disabled={isExecutingTasks}
+                      className="w-full h-24 rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-white placeholder-gray-600 focus:border-indigo-500 focus:outline-none resize-none"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
+                    <div className="flex items-center space-x-6">
+                      {/* Max Workers Select */}
+                      <div className="space-y-1">
+                        <span className="block text-[9px] font-bold uppercase tracking-wider text-gray-400">Số luồng chạy song song (Max Workers)</span>
+                        <div className="flex items-center space-x-2 mt-1">
+                          {[2, 4, 6, 8].map(w => (
+                            <button
+                              key={w}
+                              type="button"
+                              onClick={() => setMaxWorkers(w)}
+                              disabled={isExecutingTasks}
+                              className={`h-8 w-10 text-xs font-bold rounded-lg border transition ${
+                                maxWorkers === w 
+                                  ? 'bg-indigo-600/30 border-indigo-500/50 text-white font-mono' 
+                                  : 'bg-black/20 border-white/5 text-gray-500 hover:border-white/10 hover:text-white'
+                              }`}
+                            >
+                              {w}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Optimize Plan Toggle */}
+                      <div className="space-y-1">
+                        <span className="block text-[9px] font-bold uppercase tracking-wider text-gray-400">Tối ưu hóa sơ đồ đường găng</span>
+                        <label className="relative inline-flex items-center cursor-pointer mt-1">
+                          <input 
+                            type="checkbox" 
+                            checked={optimizePlan} 
+                            onChange={(e) => setOptimizePlan(e.target.checked)}
+                            disabled={isExecutingTasks}
+                            className="sr-only peer"
+                          />
+                          <div className="w-11 h-6 bg-black/40 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-gray-400 after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600 peer-checked:after:bg-white"></div>
+                          <span className="ml-2 text-xs text-gray-300">Đã kích hoạt</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isExecutingTasks || !taskInput.trim()}
+                      className="flex items-center space-x-2 rounded-xl bg-gradient-to-r from-indigo-600 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-indigo-500/20 disabled:from-gray-800 disabled:to-gray-800 disabled:text-gray-500 transition"
+                    >
+                      {isExecutingTasks ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                      <span>{isExecutingTasks ? `Đang xử lý... (${executionTime}s)` : 'Phân tách và chạy song song'}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* Status Board / Visualizer */}
+              {decomposition && (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  
+                  {/* Left & Middle: Parallel lanes & subtasks */}
+                  <div className="lg:col-span-2 space-y-6">
+                    <div className="rounded-2xl border border-white/5 bg-[#131a2c]/50 p-6 space-y-6">
+                      <div className="flex items-center justify-between border-b border-white/5 pb-4">
+                        <div className="flex items-center space-x-2">
+                          <Terminal className="h-5 w-5 text-indigo-400" />
+                          <h3 className="font-bold text-white font-mono uppercase text-sm">Sơ đồ điều phối luồng song song</h3>
+                        </div>
+                        <span className="text-[10px] font-mono rounded bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 text-indigo-400">
+                          Chiến lược: {decomposition.decomposition_strategy || "Topological Execution"}
+                        </span>
+                      </div>
+
+                      {/* Render Parallel Groups */}
+                      <div className="space-y-8 relative before:absolute before:left-4 before:top-2 before:bottom-2 before:w-0.5 before:bg-white/5">
+                        {decomposition.parallel_groups?.map((group: string[], gIdx: number) => (
+                          <div key={gIdx} className="relative pl-8 space-y-3">
+                            {/* Group Marker */}
+                            <div className="absolute left-2.5 top-0 flex h-3.5 w-3.5 -translate-x-1/2 items-center justify-center rounded-full bg-[#0b0f19] border border-white/20">
+                              <span className="h-1.5 w-1.5 rounded-full bg-indigo-500"></span>
+                            </div>
+
+                            <div className="flex items-center justify-between">
+                              <h4 className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 font-mono">
+                                Nhóm chạy song song #{gIdx + 1}
+                              </h4>
+                              <span className="text-[9px] text-gray-500 font-mono">
+                                ({group.length} tác vụ con độc lập)
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {group.map(tid => {
+                                const subtask = decomposition.subtasks?.find((t: any) => t.id === tid);
+                                if (!subtask) return null;
+                                
+                                const state = taskStatuses[tid] || { status: "pending", error: null };
+                                
+                                // Dynamic UI states based on execution status
+                                let statusBorder = "border-white/5 bg-[#131a2c]/40 hover:border-white/10";
+                                let statusIcon = <div className="h-2 w-2 rounded-full bg-gray-500"></div>;
+                                
+                                if (state.status === "running") {
+                                  statusBorder = "border-indigo-500/40 bg-indigo-950/10 shadow-lg shadow-indigo-500/5 animate-pulse";
+                                  statusIcon = <RefreshCw className="h-3 w-3 text-indigo-400 animate-spin" />;
+                                } else if (state.status === "completed") {
+                                  statusBorder = "border-emerald-500/30 bg-emerald-950/5 hover:border-emerald-500/50 shadow-md";
+                                  statusIcon = <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />;
+                                } else if (state.status === "failed" || state.status === "timeout") {
+                                  statusBorder = "border-red-500/30 bg-red-950/5 hover:border-red-500/50";
+                                  statusIcon = <AlertCircle className="h-3.5 w-3.5 text-red-400" />;
+                                }
+                                
+                                // Agent color mapper
+                                let agentBadge = "bg-gray-500/10 border-gray-500/20 text-gray-400";
+                                if (subtask.agent_type === "retriever") {
+                                  agentBadge = "bg-cyan-500/10 border-cyan-500/20 text-cyan-400";
+                                } else if (subtask.agent_type === "generator") {
+                                  agentBadge = "bg-yellow-500/10 border-yellow-500/20 text-yellow-400";
+                                } else if (subtask.agent_type === "critic") {
+                                  agentBadge = "bg-pink-500/10 border-pink-500/20 text-pink-400";
+                                } else if (subtask.agent_type === "analyzer") {
+                                  agentBadge = "bg-purple-500/10 border-purple-500/20 text-purple-400";
+                                }
+
+                                return (
+                                  <div 
+                                    key={tid}
+                                    onClick={() => setSelectedTaskDetails({ id: tid, title: subtask.title, ...state })}
+                                    className={`rounded-xl border p-4 space-y-3 cursor-pointer transition ${statusBorder}`}
+                                  >
+                                    <div className="flex items-start justify-between space-x-2">
+                                      <h5 className="text-xs font-semibold text-white leading-snug">{subtask.title}</h5>
+                                      <span className="flex-shrink-0 mt-0.5">{statusIcon}</span>
+                                    </div>
+                                    <p className="text-[10px] text-gray-400 line-clamp-2">{subtask.description}</p>
+                                    
+                                    <div className="flex items-center justify-between pt-1 text-[9px] font-mono">
+                                      <span className={`rounded border px-2 py-0.5 font-bold uppercase ${agentBadge}`}>
+                                        {subtask.agent_type}
+                                      </span>
+                                      <span className="text-gray-500">
+                                        Dự kiến: <strong>{subtask.estimated_duration_sec}s</strong>
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right: Metrics & Output preview */}
+                  <div className="space-y-6">
+                    
+                    {/* Performance Card */}
+                    <div className="rounded-2xl border border-white/5 bg-[#131a2c]/50 p-6 space-y-5">
+                      <div className="flex items-center space-x-2 text-indigo-400">
+                        <TrendingUp className="h-5 w-5" />
+                        <h3 className="font-bold text-white font-mono uppercase text-sm">Hiệu suất luồng song song</h3>
+                      </div>
+
+                      {/* Speedup Display */}
+                      <div className="text-center bg-black/20 rounded-2xl p-6 border border-white/5 space-y-2">
+                        <div className="text-xs text-indigo-400 font-bold tracking-wider uppercase font-mono">Hệ số tăng tốc (Speedup)</div>
+                        {executionResult ? (
+                          <>
+                            <div className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400 font-mono animate-pulse">
+                              {executionResult.metrics.actual_speedup_factor}x Faster
+                            </div>
+                            <div className="text-[10px] text-gray-400">Triển khai song song đạt hiệu quả vượt trội!</div>
+                          </>
+                        ) : decomposition.estimated_speedup_factor ? (
+                          <>
+                            <div className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400 font-mono">
+                              {decomposition.estimated_speedup_factor}x Speedup
+                            </div>
+                            <div className="text-[10px] text-gray-500">Hệ số lý thuyết tính theo sơ đồ đường găng.</div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400 font-mono">
+                              1.0x Speedup
+                            </div>
+                            <div className="text-[10px] text-gray-500 font-mono">Đang tính toán sơ đồ đường găng...</div>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Latency Breakdown */}
+                      <div className="space-y-3 font-mono text-xs">
+                        <div className="flex justify-between items-center py-2 border-b border-white/5">
+                          <span className="text-gray-400">Sequential Latency:</span>
+                          <span className="font-bold text-white">
+                            {decomposition.subtasks?.reduce((sum: number, t: any) => sum + t.estimated_duration_sec, 0).toFixed(1)}s
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center py-2 border-b border-white/5">
+                          <span className="text-gray-400">Parallelized Duration:</span>
+                          <span className="font-bold text-cyan-400">
+                            {executionResult 
+                              ? `${executionResult.metrics.total_execution_time_sec}s` 
+                              : `~${decomposition.estimated_total_time_sec.toFixed(1)}s`}
+                          </span>
+                        </div>
+                        {executionResult && (
+                          <div className="flex justify-between items-center py-2 border-b border-white/5">
+                            <span className="text-gray-400">Efficiency Ratio:</span>
+                            <span className="font-bold text-emerald-400">
+                              {((1 - (executionResult.metrics.total_execution_time_sec / decomposition.subtasks?.reduce((sum: number, t: any) => sum + t.estimated_duration_sec, 0))) * 100).toFixed(1)}% time saved
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Database Indicator */}
+                      <div className="rounded-xl bg-indigo-950/20 border border-indigo-500/20 p-4 text-[10px] leading-relaxed text-indigo-400 flex items-start space-x-2">
+                        <span className="mt-0.5">💡</span>
+                        <span>
+                          <strong>Đã đồng bộ cơ sở dữ liệu:</strong> Toàn bộ {decomposition.subtasks?.length} công việc đã tự động lưu vào SQLite Task Manager. Bạn có thể mở CLI hoặc DB Viewer để xem.
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Output Viewer Card */}
+                    <div className="rounded-2xl border border-white/5 bg-[#131a2c]/50 p-6 space-y-4">
+                      <h3 className="font-bold text-white font-mono uppercase text-sm border-b border-white/5 pb-3">
+                        🔍 Chi tiết kết quả tác vụ
+                      </h3>
+                      
+                      {selectedTaskDetails ? (
+                        <div className="space-y-3">
+                          <div>
+                            <h4 className="text-xs font-bold text-indigo-400">{selectedTaskDetails.title}</h4>
+                            <span className="text-[9px] text-gray-500 font-mono">ID: {selectedTaskDetails.id}</span>
+                          </div>
+                          
+                          <div className="border-t border-white/5 pt-2">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Kết quả đầu ra:</span>
+                            {selectedTaskDetails.status === "completed" ? (
+                              <div className="mt-1.5 text-xs text-gray-300 bg-black/45 p-4 rounded-xl border border-white/5 max-h-64 overflow-y-auto whitespace-pre-wrap leading-relaxed font-mono">
+                                {typeof selectedTaskDetails.result === 'object' 
+                                  ? JSON.stringify(selectedTaskDetails.result, null, 2) 
+                                  : selectedTaskDetails.result}
+                              </div>
+                            ) : selectedTaskDetails.status === "running" ? (
+                              <div className="mt-1.5 flex h-24 items-center justify-center rounded-xl bg-black/25 text-xs text-indigo-400 font-mono animate-pulse">
+                                <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+                                Đang xử lý...
+                              </div>
+                            ) : selectedTaskDetails.status === "failed" ? (
+                              <div className="mt-1.5 text-xs text-red-400 bg-red-950/20 p-4 rounded-xl border border-red-500/20 whitespace-pre-wrap font-mono">
+                                Lỗi thực thi: {selectedTaskDetails.error}
+                              </div>
+                            ) : (
+                              <div className="mt-1.5 flex h-24 items-center justify-center rounded-xl bg-black/25 text-xs text-gray-600 font-mono">
+                                Đang chờ luồng chạy...
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex h-36 flex-col items-center justify-center text-center text-gray-500 bg-black/10 rounded-xl border border-dashed border-white/10 p-4">
+                          <HelpCircle className="h-6 w-6 text-gray-600 mb-1" />
+                          <p className="text-xs">Click vào bất kỳ thẻ công việc con nào ở bên để xem chi tiết kết quả trả về của Agent.</p>
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+
                 </div>
               )}
 

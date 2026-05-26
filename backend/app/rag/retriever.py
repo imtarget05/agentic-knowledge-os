@@ -1,12 +1,16 @@
 import os
 import re
 from typing import List, Dict, Any, Tuple
+# pyrefly: ignore [missing-import]
 from qdrant_client import QdrantClient
+# pyrefly: ignore [missing-import]
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 
 from app.config import settings
 from app.observability.logging import logger
+# pyrefly: ignore [missing-import]
 from app.rag.embeddings import embedding_engine
+# pyrefly: ignore [missing-import]
 from llama_index.core.schema import TextNode
 
 def tokenize_text(text: str) -> List[str]:
@@ -53,7 +57,8 @@ class HybridRetrieverEngine:
                     vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE)
                 )
                 # Create Full-Text Index for Native Sparse Search
-                from qdrant_client.models import TextIndexParams, TokenizerType
+                # pyrefly: ignore [missing-import]    
+                from qdrant_client.models import TextIndexParams, TokenizerType     
                 self.qdrant_client.create_payload_index(
                     collection_name=self.collection_name,
                     field_name="text",
@@ -128,6 +133,7 @@ class HybridRetrieverEngine:
             # Using Qdrant's scroll with a filter acts as a keyword match search
             # if we have set up the payload indexes correctly.
             # For this MVP, we simulate sparse via full-text match.
+            # pyrefly: ignore [missing-import]
             from qdrant_client.models import Filter, FieldCondition, MatchText
             
             results = self.qdrant_client.scroll(
